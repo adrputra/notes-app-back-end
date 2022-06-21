@@ -1,13 +1,14 @@
 const { Pool } = require('pg');
 const { nanoid } = require('nanoid');
 const InvariantError = require('../../exceptions/InvariantError');
-const { mapDBToModel } = require('../../utils');
 const NotFoundError = require('../../exceptions/NotFoundError');
 const AuthorizationError = require('../../exceptions/AuthorizationError');
+const { mapDBToModel } = require('../../utils');
 
 class NotesService {
-  constructor() {
+  constructor(collaborationsService) {
     this._pool = new Pool();
+    this._collaborationsService = collaborationsService;
   }
 
   async addNote({
@@ -32,17 +33,26 @@ class NotesService {
   }
 
   async getNotes(owner) {
-    const query = {
-      text: 'SELECT * FROM notes WHERE owner = $1',
-      values: [owner],
-    };
-    const result = await this._pool.query(query);
+    // const query = {
+    //   text: `SELECT notes.* FROM notes
+    // LEFT JOIN collaborations ON collaborations.note_id = notes.id
+    // WHERE notes.owner = $1 OR collaborations.user_id = $1
+    // GROUP BY notes.id`,
+    //   values: [owner],
+    // };
+    const result = await this._pool.query(`SELECT notes.* FROM notes
+  LEFT JOIN collaborations ON collaborations.note_id = notes.id
+  WHERE notes.owner = '${owner}' OR collaborations.user_id = '${owner}'
+  GROUP BY notes.id`);
     return result.rows.map(mapDBToModel);
   }
 
   async getNoteById(id) {
     const query = {
-      text: 'SELECT * FROM notes WHERE id = $1',
+      text: `SELECT notes.*, users.username
+    FROM notes
+    LEFT JOIN users ON users.id = notes.owner
+    WHERE notes.id = $1`,
       values: [id],
     };
     const result = await this._pool.query(query);
@@ -94,6 +104,30 @@ class NotesService {
     if (note.owner !== owner) {
       throw new AuthorizationError('Anda tidak berhak mengakses resource ini');
     }
+  }
+
+  async verifyNoteAccess(noteId, userId) {
+    try {
+      await this.verifyNoteOwner(noteId, userId);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      try {
+        await this._collaborationsService.verifyCollaborator(noteId, userId);
+      } catch {
+        throw error;
+      }
+    }
+  }
+
+  async getUsersByUsername(username) {
+    const query = {
+      text: 'SELECT id, username, fullname FROM users WHERE username LIKE $1',
+      values: [`%${username}%`],
+    };
+    const result = await this._pool.query(query);
+    return result.rows;
   }
 }
 
